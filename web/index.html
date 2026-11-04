@@ -60,7 +60,7 @@
         <div id="chat-input-area">
           <textarea id="chat-input" placeholder="输入你的想法，Shift+Enter 换行..." rows="2"></textarea>
           <button id="btn-send" class="btn-send" title="发送 (Enter)">发送</button>
-          <button id="btn-search" class="btn-search" title="搜索素材">搜索素材</button>
+          <button id="btn-search" class="btn-search hidden" title="搜索素材">搜索素材</button>
         </div>
       </div>
 
@@ -130,10 +130,9 @@
 
         <button id="btn-export" class="btn-export">导出角色卡 V2</button>
         <div class="draft-actions">
-          <button id="btn-world" class="btn-draft-action">生成世界观</button>
-          <button id="btn-image" class="btn-draft-action">生成立绘</button>
-          <button id="btn-voice" class="btn-draft-action">匹配声音</button>
-          <button id="btn-bridge" class="btn-draft-action">导入忆界树</button>
+          <button id="btn-image" class="btn-draft-action hidden">生成立绘</button>
+          <button id="btn-voice" class="btn-draft-action hidden">匹配声音</button>
+          <button id="btn-bridge" class="btn-draft-action hidden">导入忆界树</button>
         </div>
         <p id="export-status" class="export-status hidden"></p>
       </aside>

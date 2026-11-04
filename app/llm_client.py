@@ -71,7 +71,10 @@ async def _call_api(payload: dict, cfg: dict) -> str:
     if provider_type != "openai_compatible":
         raise ValueError(f"Unsupported provider_type: {provider_type}")
 
-    url = f"{base_url}/v1/chat/completions"
+    if base_url.endswith("/v1"):
+        url = f"{base_url}/chat/completions"
+    else:
+        url = f"{base_url}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

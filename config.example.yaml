@@ -1,0 +1,45 @@
+app:
+  database_path: data/forge.db
+  export_dir: exports
+
+auth:
+  # Leave empty for an independent local account database at data/auth.db.
+  shared_db_path: ""
+
+llm:
+  default_provider: deepseek
+  temperature: 0.4
+  max_tokens: 1500
+  providers:
+    deepseek:
+      api_key_env: DEEPSEEK_API_KEY
+      base_url: https://api.deepseek.com
+      model: deepseek-chat
+    openai:
+      api_key_env: OPENAI_API_KEY
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+
+features:
+  search_enabled: false
+  image_enabled: false
+  # Experimental API. Generated worlds are not saved or exported.
+  world_enabled: false
+
+search:
+  provider: auto
+  providers:
+    searxng:
+      base_url: ""
+
+image:
+  provider: pollinations
+
+voice:
+  # Alternatives: elevenlabs, edge_tts, fish_audio.
+  provider: none
+  output_dir: exports/voices
+
+mnemosyne_bridge:
+  enabled: false
+  base_url: http://127.0.0.1:8001

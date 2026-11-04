@@ -11,9 +11,12 @@ exports/voices/*
 exports/references/*
 !exports/.gitkeep
 tunnel.log
+.server.pid
 
 # Python
 __pycache__/
+.venv/
+.pytest_cache/
 *.pyc
 *.pyo
 

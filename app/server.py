@@ -6,19 +6,24 @@ Serves the web frontend at root path and API endpoints under /api/.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from . import auth, db, oc_session
 from .config import get_app_config, get_config, get_project_root
 from .image_providers import list_providers as list_image_providers
+from .oc_consistency import check_draft, determine_next_stage
+from .oc_models import OCDraft
 from .search_providers import list_providers as list_search_providers
 from .voice_safety import should_block_elevenlabs_auto_design
 
@@ -91,6 +96,7 @@ async def features(user: dict[str, Any] = Depends(auth.current_user)):
         "image_enabled": bool(features_cfg.get("image_enabled", False)),
         "voice_enabled": voice_provider not in ("", "none"),
         "voice_provider": voice_provider,
+        "bridge_enabled": bool(cfg.get("mnemosyne_bridge", {}).get("enabled", False)),
     }
 
 
@@ -270,15 +276,28 @@ async def update_draft(session_id: str, body: dict, user: dict[str, Any] = Depen
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="updates must be a dict")
     locked = body.get("locked_fields", [])
-
-    for field, value in updates.items():
-        if hasattr(draft, field):
-            setattr(draft, field, value)
-
-    if locked:
-        draft.locked_fields = list(set(draft.locked_fields + locked))
-
+    editable = OCDraft.model_fields.keys() - {"locked_fields", "missing_fields", "current_stage", "completion_score"}
+    if not isinstance(locked, list) or any(not isinstance(field, str) or field not in editable for field in locked):
+        raise HTTPException(status_code=422, detail="locked_fields must contain editable field names")
+    if updates.keys() - editable:
+        raise HTTPException(status_code=422, detail="updates contains a field that cannot be edited")
+    try:
+        draft = OCDraft.model_validate({
+            **draft.model_dump(),
+            **updates,
+            "locked_fields": list(dict.fromkeys([*draft.locked_fields, *locked])),
+        })
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="Invalid draft fields: " + ", ".join(
+            str(error["loc"][0]) for error in exc.errors()
+        )) from exc
+    check = check_draft(draft)
+    draft.missing_fields = check["missing_fields"]
+    draft.completion_score = check["completion_score"]
+    draft.current_stage = determine_next_stage(draft)
     db.update_session_draft(session_id, draft)
+    if "name" in updates or "core_concept" in updates:
+        db.update_session_title(session_id, (draft.name or draft.core_concept or "新角色")[:30])
     return {"ok": True, "draft": draft.model_dump()}
 
 
@@ -319,31 +338,28 @@ async def export_card(session_id: str, user: dict[str, Any] = Depends(auth.curre
 async def download_card(session_id: str, user: dict[str, Any] = Depends(auth.current_user)):
     """Download the already-exported card JSON file directly, without re-generating."""
     _require_session_access(session_id, user)
-    import json as _json
-    from pathlib import Path as _Path
-    from .config import get_project_root
-
-    export_dir = get_project_root() / "exports"
+    export_dir = get_project_root() / get_app_config()["export_dir"]
     file_path = export_dir / f"{session_id}_card.json"
     if not file_path.exists():
         # Fallback: generate if not already saved
         result = await oc_session.export_session_card(session_id)
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "Export failed"))
-        file_path = _Path(result["file_path"])
+        file_path = Path(result["file_path"])
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Exported file not found")
         card_data = result["card"]
     else:
         with open(file_path, "r", encoding="utf-8") as f:
-            card_data = _json.load(f)
+            card_data = json.load(f)
 
     raw_name = card_data.get("data", {}).get("name", "character")
-    safe_name = str(raw_name).replace("/", "_").replace("\\", "_")[:50]
-    filename = f"{safe_name}_card.json"
+    safe_name = re.sub(r'[\x00-\x1f\x7f<>:"/\\|?*]', "_", str(raw_name))[:50].strip(" .") or "character"
+    fallback = re.sub(r"[^A-Za-z0-9 ._-]", "_", safe_name).strip(" ._") or "character"
+    filename = quote(f"{safe_name}_card.json", safe="")
     return JSONResponse(
         content=card_data,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename=\"{fallback}_card.json\"; filename*=UTF-8''{filename}"},
     )
 
 
@@ -397,6 +413,8 @@ async def search_providers(user: dict[str, Any] = Depends(auth.current_user)):
 async def generate_world(session_id: str, user: dict[str, Any] = Depends(auth.current_user)):
     from .oc_world import generate_world as gen_world
     _require_session_access(session_id, user)
+    if not get_config().get("features", {}).get("world_enabled", False):
+        raise HTTPException(status_code=400, detail="世界观实验接口未启用。")
     draft = await oc_session.get_session_draft(session_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -494,6 +512,8 @@ async def import_to_mnemosyne(session_id: str, user: dict[str, Any] = Depends(au
     from .mnemosyne_bridge import import_to_mnemosyne as do_import
     from .oc_export import export_card_v2 as do_export
     _require_session_access(session_id, user)
+    if not get_config().get("mnemosyne_bridge", {}).get("enabled", False):
+        raise HTTPException(status_code=400, detail="忆界树桥接未启用。")
     export = await do_export(session_id)
     if not export.get("ok"):
         return export
@@ -604,16 +624,21 @@ async def image_candidates(session_id: str, body: dict, user: dict[str, Any] = D
     candidates = []
     for i, v in enumerate(variations[:3]):
         try:
+            style = v.get("style", "anime")
+            prompt = v.get("positive_prompt", "")
+            negative_prompt = v.get("negative_prompt", "")
             result = await generate_character_image(
-                draft, v.get("style", "anime"), prompt=v.get("positive_prompt", ""),
+                draft, style, prompt=prompt, negative_prompt=negative_prompt,
                 provider_name=provider_name, **provider_kwargs,
             )
-            critique = await critique_image_prompt(draft, v.get("positive_prompt", ""), v.get("negative_prompt", ""))
+            prompt = result.get("prompt", prompt)
+            negative_prompt = result.get("negative_prompt", negative_prompt)
+            critique = await critique_image_prompt(draft, prompt, negative_prompt)
             result_critique = {"note": "result_image_critique_not_available"}
             if result.get("ok") and result.get("image_path"):
                 try:
                     result_critique = await critique_image_result(draft, result["image_path"],
-                        v.get("positive_prompt", ""), v.get("negative_prompt", ""))
+                        prompt, negative_prompt)
                 except Exception:
                     pass
             image_url = ""
@@ -621,7 +646,8 @@ async def image_candidates(session_id: str, body: dict, user: dict[str, Any] = D
             if result.get("ok") and result.get("image_path"):
                 image_url = "/exports/images/" + Path(result["image_path"]).name
                 asset_id = db.insert_asset(session_id, "image_candidate", provider_name, result["image_path"],
-                    {"index": i, "style": v.get("style", ""), "prompt": v.get("positive_prompt", "")})
+                    {"index": i, "style": style, "prompt": prompt,
+                     "negative_prompt": negative_prompt, "seed": result.get("seed")})
             candidates.append({
                 "index": i, "label": STYLE_LABEL_MAP.get(v.get("style", ""), f"候选 {i + 1}"),
                 "style": v.get("style", ""),
@@ -629,8 +655,9 @@ async def image_candidates(session_id: str, body: dict, user: dict[str, Any] = D
                 "image_path": result.get("image_path", ""),
                 "image_url": image_url,
                 "asset_id": asset_id,
-                "prompt": v.get("positive_prompt", ""),
-                "negative_prompt": v.get("negative_prompt", ""),
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "seed": result.get("seed"),
                 "error": result.get("error", ""),
                 "critique": critique,
                 "result_critique": result_critique,
@@ -731,31 +758,33 @@ async def visual_canon_lock(session_id: str, body: dict, user: dict[str, Any] = 
     draft = await oc_session.get_session_draft(session_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    asset = None
-    if body.get("asset_id"):
-        asset = db.select_asset(int(body["asset_id"]), session_id, "image_candidate")
-        if asset is None:
-            raise HTTPException(status_code=404, detail="Asset not found")
-    image_path = body.get("image_path") or (asset or {}).get("path", "")
-    asset_meta = (asset or {}).get("metadata", {})
+    asset_id = body.get("asset_id")
+    if asset_id is None:
+        # Older clients send the image path rather than the asset ID.
+        asset_id = next((a["id"] for a in db.list_assets(session_id, "image_candidate")
+                         if a["path"] == body.get("image_path")), None)
+    if asset_id is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid asset_id") from exc
+    asset = db.select_asset(asset_id, session_id, "image_candidate")
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    asset_meta = asset["metadata"]
     canon = {
         "selected_style": body.get("style") or asset_meta.get("style", ""),
         "locked_prompt": body.get("prompt") or asset_meta.get("prompt", ""),
         "negative_prompt": body.get("negative_prompt") or asset_meta.get("negative_prompt", ""),
         "seed": body.get("seed") or asset_meta.get("seed"),
-        "image_path": image_path,
-        "asset_id": body.get("asset_id"),
+        "image_path": asset["path"],
+        "asset_id": asset_id,
         "locked_at": datetime.now(timezone.utc).isoformat(),
     }
-    if image_path:
-        canon["locked_asset_id"] = db.insert_asset(
-            session_id,
-            "image_locked",
-            "stability",
-            image_path,
-            canon,
-            selected=True,
-        )
+    canon["locked_asset_id"] = db.insert_asset(
+        session_id, "image_locked", asset["provider"], asset["path"], canon, selected=True,
+    )
     draft.user_preferences.append(json.dumps(canon, ensure_ascii=False))
     db.update_session_draft(session_id, draft)
     return {"ok": True, "canon": canon}
@@ -1284,8 +1313,9 @@ async def voice_unit_regenerate(session_id: str, body: dict, user: dict[str, Any
 
     output_dir = get_project_root() / vc.get("output_dir", "exports/voices")
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = str(output_dir / f"{session_id}_unit{unit_index}_regen.mp3")
+    output_path = str(output_dir / f"{session_id}_{uuid4().hex[:12]}_unit{unit_index}_regen.mp3")
 
+    units[unit_index] = unit
     provider = ElevenLabsProvider()
     try:
         audio_path = await provider.text_to_speech(
@@ -1297,6 +1327,7 @@ async def voice_unit_regenerate(session_id: str, body: dict, user: dict[str, Any
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+    db.save_voice_profile(session_id, json.dumps(profile, ensure_ascii=False))
     audio_url = "/exports/voices/" + Path(audio_path).name
     asset_id = db.insert_asset(
         session_id,

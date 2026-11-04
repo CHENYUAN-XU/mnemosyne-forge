@@ -6,8 +6,10 @@ These tests mock HTTP calls and do not hit real image APIs.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -24,7 +26,7 @@ from app.image_providers.stability_provider import StabilityProvider
 from app.oc_models import OCDraft
 
 # Use a stub config so the providers can read image.providers settings.
-app_config._config_cache = {
+IMAGE_CONFIG = {
     "app": {"database_path": "data/forge.db", "export_dir": "exports"},
     "image": {
         "provider": "pollinations",
@@ -36,6 +38,16 @@ app_config._config_cache = {
         },
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def image_config(monkeypatch):
+    monkeypatch.setattr(app_config, "_config_cache", deepcopy(IMAGE_CONFIG))
+    monkeypatch.setenv("STABILITY_API_KEY", "fake-stability-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    with TemporaryDirectory() as output:
+        monkeypatch.setattr(app_config, "_project_root", Path(output))
+        yield
 
 
 class _FakeResponse:
@@ -185,7 +197,7 @@ async def test_custom_provider_success(monkeypatch) -> None:
 
 
 def main() -> None:
-    pytest.main([__file__, "-v"])
+    raise SystemExit(pytest.main([__file__, "-v"]))
 
 
 if __name__ == "__main__":

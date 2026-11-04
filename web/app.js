@@ -283,7 +283,8 @@
         el.addEventListener('click', function() {
           if (el.querySelector('input, textarea')) return;
           var valEl = el.querySelector('.field-value');
-          var currentVal = draft[field];
+          var currentVal = state.draft[field];
+          var sessionId = state.sessionId;
           var isList = ['personality','abilities','weaknesses','relationships','themes','tags'].includes(field);
           var input = document.createElement(isList ? 'input' : 'textarea');
           input.className = 'field-edit';
@@ -297,16 +298,26 @@
           }
           valEl.replaceWith(input);
           input.focus();
+          var editing = true;
+          function finishEdit() {
+            if (!editing) return false;
+            editing = false;
+            input.replaceWith(valEl);
+            return true;
+          }
           async function saveEdit() {
             var newVal = input.value.trim();
+            if (!finishEdit() || state.sessionId !== sessionId) return;
             var update = {};
             if (isList) update[field] = newVal ? newVal.split(/[、,，]/).map(function(s) { return s.trim(); }).filter(Boolean) : [];
             else update[field] = newVal || null;
             try {
-              var data = await apiCall('PATCH', '/api/sessions/' + state.sessionId + '/draft', { updates: update });
+              var data = await apiCall('PATCH', '/api/sessions/' + sessionId + '/draft', { updates: update });
+              if (state.sessionId !== sessionId) return;
               if (data.draft) updateDraftPanel(data.draft);
               showToast('已保存', 'success');
             } catch (e) {
+              if (state.sessionId !== sessionId) return;
               showToast('保存失败: ' + e.message, 'error');
               updateDraftPanel(state.draft);
             }
@@ -314,7 +325,11 @@
           input.addEventListener('blur', saveEdit);
           input.addEventListener('keydown', function(ev) {
             if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); input.blur(); }
-            if (ev.key === 'Escape') updateDraftPanel(state.draft);
+            if (ev.key === 'Escape') {
+              ev.preventDefault();
+              finishEdit();
+              updateDraftPanel(state.draft);
+            }
           });
         });
       }
@@ -899,15 +914,6 @@
   }
 
   ensureAssetButton();
-
-  $('#btn-world').addEventListener('click', async function() {
-    if (!state.sessionId) return;
-    try {
-      showToast('正在生成世界观…', 'success');
-      var data = await apiCall('POST', '/api/sessions/' + state.sessionId + '/world');
-      if (data.ok) showToast('世界观已生成', 'success');
-    } catch(e) { showToast(e.message, 'error'); }
-  });
 
   var imageOverlay = null;
   var imageContent = null;
@@ -1796,6 +1802,7 @@
       btnCloseAuth.classList.remove('hidden');
       hideAuth();
       updateUserDisplay(data.user);
+      await loadFeatureFlags();
       showDashboard();
     } catch (e) { showError(authError, e.message); }
   });
@@ -1813,6 +1820,7 @@
       btnCloseAuth.classList.remove('hidden');
       hideAuth();
       updateUserDisplay(data.user);
+      await loadFeatureFlags();
       showDashboard();
     } catch (e) { showError(authError, e.message); }
   });
@@ -1825,6 +1833,7 @@
       btnCloseAuth.classList.remove('hidden');
       hideAuth();
       updateUserDisplay(data.user);
+      await loadFeatureFlags();
       showDashboard();
     } catch (e) { showError(authError, e.message); }
   });
@@ -1857,8 +1866,10 @@
   async function loadFeatureFlags() {
     try {
       var features = await apiCall('GET', '/api/features');
-      var voiceBtn = $('#btn-voice');
-      if (voiceBtn) voiceBtn.classList.toggle('hidden', !features.voice_enabled);
+      btnSearch.classList.toggle('hidden', !features.search_enabled);
+      $('#btn-image').classList.toggle('hidden', !features.image_enabled);
+      $('#btn-voice').classList.toggle('hidden', !features.voice_enabled);
+      $('#btn-bridge').classList.toggle('hidden', !features.bridge_enabled);
     } catch (e) {
       // Keep defaults if features endpoint fails.
     }

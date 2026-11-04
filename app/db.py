@@ -484,12 +484,11 @@ def select_asset(asset_id: int, session_id: str, asset_type: str | None = None) 
             "SELECT * FROM assets WHERE id = ? AND session_id = ?",
             (asset_id, session_id),
         ).fetchone()
-        if row is None:
+        if row is None or (asset_type and row["asset_type"] != asset_type):
             return None
-        resolved_type = asset_type or row["asset_type"]
         conn.execute(
             "UPDATE assets SET selected = 0 WHERE session_id = ? AND asset_type = ?",
-            (session_id, resolved_type),
+            (session_id, row["asset_type"]),
         )
         conn.execute(
             "UPDATE assets SET selected = 1 WHERE id = ? AND session_id = ?",

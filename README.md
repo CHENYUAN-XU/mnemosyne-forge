@@ -1,69 +1,46 @@
 # 造枝 Mnemosyne Forge
 
-> 忆界 / Mnemosyne Realm 生态下的 AI 原创角色创作系统
+造枝是忆界生态中的本地原创角色创作工具。输入灵感后，可通过多轮对话补全设定，也可以一次生成角色草稿。草稿支持手动修改和历史恢复，可导出 Character Card V2 JSON 和 Markdown。
 
-输入模糊角色灵感，通过多轮对话逐步补全设定，最终导出 Character Card V2 标准角色卡。支持联网搜索素材、Stability AI 生图、ElevenLabs 专属音色、世界观生成、与忆界树桥接。
+## 首次启动
 
-## 启动
+在 Windows PowerShell 中进入仓库根目录。需要 Python 3.11 或更新版本。
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if (!(Test-Path config.yaml)) { Copy-Item config.example.yaml config.yaml }
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+默认模型使用 DeepSeek。在 `.env` 中填入 `DEEPSEEK_API_KEY`，或在 `config.yaml` 中选择其他已配置的模型，并填写对应的环境变量。网页和注册可以在未配置密钥时启动，生成角色需要可用的模型密钥。
 
 ```powershell
 .\run_dev.ps1
 ```
 
-浏览器打开 http://127.0.0.1:8010，登录后开始创作。
+打开 [本地工作台](http://127.0.0.1:8010)，注册本地账号后开始创作。终端按 `Ctrl+C` 停止服务。端口已占用时可用 `.\run_dev.ps1 -Port 8011`，开发时可加 `-Reload`。
 
-停止服务器：
+## 可选功能
 
-```powershell
-Stop-Process -Id (Get-Content .server.pid)
-```
+| 功能 | 启用方式 |
+| --- | --- |
+| 联网搜索 | 设置 `features.search_enabled: true`。默认按 Serper、Tavily、SearXNG、DuckDuckGo、Bing 的顺序选择可用后端。 |
+| 角色立绘 | 设置 `features.image_enabled: true`。可在网页选择 Pollinations、Stability、OpenAI、Seedream 或自定义接口。供应商的模型、密钥和服务可用性决定实际结果。 |
+| 角色试音 | 将 `voice.provider` 设为 `elevenlabs`、`edge_tts` 或 `fish_audio`。ElevenLabs 的专属音色在试听前需要先生成并选定。 |
+| 导入忆界树 | 设置 `mnemosyne_bridge.enabled: true` 和接收端 `base_url`，并启动支持角色导入的忆界树服务。需要共享登录时，再配置 `auth.shared_db_path`。 |
 
-## 配置
+世界观生成保留为实验 API。设置 `features.world_enabled: true` 可在 `/docs` 调用；生成结果目前不会保存到草稿或进入角色卡。图像评审检查提示词，实际成图由用户挑选。
 
-创建 `.env`：
+## 验收与备份
 
-```env
-DEEPSEEK_API_KEY=sk-xxx      # LLM（必填）
-STABILITY_API_KEY=sk-xxx     # 生图（可选）
-ELEVENLABS_API_KEY=xxx       # 专属音色（可选）
-FISH_API_KEY=xxx             # Fish Audio（可选）
-SERPER_API_KEY=xxx           # 联网搜索（推荐，稳定）
-TAVILY_API_KEY=xxx           # 联网搜索（备选）
-```
-
-`config.yaml` 中可切换 LLM provider、语音 provider、生图参数：
-
-- **联网搜索**：`search.provider` 默认 `auto`，按以下优先级自动选择：`serper`（需 `SERPER_API_KEY`）→ `tavily`（需 `TAVILY_API_KEY`）→ `searxng`（需自建实例）→ `duckduckgo`（免费，易挂）→ `bing_scraper`（最后兜底，不稳定）。搜索结果只作为当前请求素材，不写入角色卡/世界书。
-- **图像生成**：支持多模型自选。`image.provider` 为默认 provider，可选 `pollinations`（免费，无需 key） / `stability` / `openai` / `seedream` / `custom`。前端生图面板可切换模型；选择 `custom` 时可填写自己的 base_url、model、api_key。
-- **声音**：`voice.provider` 控制声音功能是否启用，可选 `elevenlabs` / `edge_tts` / `fish_audio` / `none`。
-- 旧的 `features.voice_enabled` 已移除，避免语义冲突。
-
-### 开发检查
+安装开发依赖和 Node.js 后可运行离线检查。
 
 ```powershell
-py -m scripts.check
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m scripts.check
 ```
 
-如果 `node` 不在 PATH 中，可设置环境变量：
+如果 Node.js 不在 PATH，可先设置 `$env:NODE_EXE = "C:\Program Files\nodejs\node.exe"`。统一检查涵盖角色会话、中文卡片下载、资产、搜索和声音。用真实服务验收时，从创建一个测试角色开始，刷新并从角色库恢复，再导出并打开 JSON 卡片。已启用的图片、声音或桥接可以在同一角色上分别验收。
 
-```powershell
-$env:NODE_EXE = "C:\Program Files\nodejs\node.exe"
-py -m scripts.check
-```
-
-## 功能
-
-- **多 Agent 协作**：Guide / Designer / Consistency / Export
-- **快速生成**：一键生成完整角色卡，跳过逐轮对话
-- **账号系统**：与忆界树共享用户数据库
-- **搜索增强**：多后端联网搜索（Serper / Tavily / SearXNG / DuckDuckGo / Bing 爬虫兜底），按可用性自动选择，结果仅作为临时创作素材
-- **图像生成**：多模型三候选生图（Pollinations 免费默认 / Stability / OpenAI / 自定义），Visual Identity Agent + Prompt Director + Image Critic
-- **专属音色**：ElevenLabs Voice Design 三候选，选择后锁定为角色专属 voice_id
-- **声音备选**：Edge TTS（免费自动匹配）、Fish Audio（需 reference_id）
-- **世界观生成**：LLM 生成世界观 + 世界书条目
-- **角色卡导出**：Character Card V2 JSON + Markdown，含绑定资产
-- **角色库**：可恢复、删除历史角色，资产历史面板
-
-## 技术栈
-
-Python 3.11+ / FastAPI / SQLite / Pydantic V2 / httpx / ddgs / Stability AI / ElevenLabs
+备份时先停止服务，再保存 `data/`、`exports/` 和本地 `config.yaml`。如果共享了忆界树账号库，请一并按忆界树的流程备份。API 密钥单独保存在本地 `.env` 中。部分历史资产记录使用绝对路径，迁移目录后应打开旧角色检查图像和音频引用。

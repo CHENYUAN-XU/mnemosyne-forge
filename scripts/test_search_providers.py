@@ -23,7 +23,7 @@ from app.search_providers import (
 )
 from app.search_providers.bing_scraper_provider import BingScraperProvider
 
-app_config._config_cache = {
+SEARCH_CONFIG = {
     "app": {"database_path": "data/forge.db", "export_dir": "exports"},
     "search": {
         "provider": "auto",
@@ -37,6 +37,11 @@ app_config._config_cache = {
         },
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def search_config(monkeypatch):
+    monkeypatch.setattr(app_config, "_config_cache", SEARCH_CONFIG)
 
 
 class _FakeResponse:
@@ -57,8 +62,8 @@ def test_list_providers() -> None:
 
 
 def test_resolve_provider_falls_back_to_bing_scraper(monkeypatch) -> None:
-    monkeypatch.delenv("SERPER_API_KEY", raising=False)
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr("app.search_providers.serper_provider.read_env", lambda _: "")
+    monkeypatch.setattr("app.search_providers.tavily_provider.read_env", lambda _: "")
     provider = resolve_provider(app_config._config_cache["search"])
     assert isinstance(provider, (DuckDuckGoProvider, BingScraperProvider))
 
@@ -85,7 +90,7 @@ async def test_serper_provider_success(monkeypatch) -> None:
 
 @pytest.mark.anyio
 async def test_serper_provider_missing_key(monkeypatch) -> None:
-    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.setattr("app.search_providers.serper_provider.read_env", lambda _: "")
     provider = SerperProvider()
     results = await provider.search("test")
     assert results == []
@@ -129,7 +134,7 @@ async def test_bing_scraper_provider_parses_html(monkeypatch) -> None:
 
 
 def main() -> None:
-    pytest.main([__file__, "-v"])
+    raise SystemExit(pytest.main([__file__, "-v"]))
 
 
 if __name__ == "__main__":
